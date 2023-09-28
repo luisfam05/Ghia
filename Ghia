@@ -1,0 +1,1264 @@
+!*************************************************************!
+!		TALLER DE PROGRAMACION "DINAMICA DE FLUIDOS"		  !
+!*************************************************************!
+!					PROGRAMA  "FLUIDOS"						  !
+! Fecha: 13/julio/2022*
+! ACTIVIDAD: 11 SIMPLE	  Cavidad con pared deslizante
+
+PROGRAM Difusion2D_V1
+IMPLICIT DOUBLEPRECISION (A-H,O-Z)
+REAL::inicio,fin,tiempo
+
+PARAMETER (Dt=0.05D+00)
+!**************************************************************
+!***	INFORMACIÓN DEL CICLO INTERNO "EDO. PERMANENTE"
+!**************************************************************
+! ERROR DE CONVERGENCIA 
+PARAMETER (IALGORITMO=2) !(1)S.I.M.P.L.E   !(2)S.I.M.P.L.E.C
+
+PARAMETER (EPS_U=1.0D-08)
+PARAMETER (EPS_V=1.0D-08)
+PARAMETER (EPS_P=1.0D-08)
+
+PARAMETER (ITERMAX=150000)           !ITERACIONES MAXIMAS
+
+!**************************************************************
+!***	INFORMACIÓN DE MALLA NUMÉRICA
+!**************************************************************
+!Longuitud, [m]
+PARAMETER (HX=0.5D+00)	
+PARAMETER (HY=0.5D+00)
+! Numéro de nodos				 
+PARAMETER (NX=101)
+PARAMETER (NY=101)
+
+!**************************************************************
+!***	PROPIEDADES TERMOFÍSICAS  ***MENU***
+!**************************************************************
+! PROPIEDADES DEL AíRE
+PARAMETER (Rho=1.2047D+00)		! Densidad, [kg/m³]		
+PARAMETER (Visc=1.817D-05) 	 	! Viscosidad dinamica 
+
+!*************************************************************
+!***	PARAMETROS DE ARRANQUE Y MÁS
+!*************************************************************
+PARAMETER (Re=400.0D+00)	    ! No. de Reynolds
+
+PARAMETER (Vinicial=0.0D+00)	! Velocidad inicial V
+PARAMETER (Pinicial=1.01325D+05)! Presión inicial	
+
+PARAMETER (NSCHEME=5)   !(1)  CENTRADO !(2)  UPWIND !(3)  EXACTO O EXPONENCIAL !(4)  HIBRIDO  !(5)  LEY DE POTENCIA
+PARAMETER (PI=3.1416D+00)   
+
+! INFORMACIÓN ADICIONAL 
+PARAMETER (Sc=0.0D+00) ! Generación de calor volumetrica, [W/m³] CCC NO SE CONSIDERA CCC
+
+PARAMETER (NPASU=1)          ! No. de pasadas en solver U 
+PARAMETER (NSOLVERU=1)		 !
+PARAMETER (RELAXU=0.5D+00)   !
+
+PARAMETER (NPASV=1)			 ! No. de pasadas en solver V
+PARAMETER (NSOLVERV=1)		 !
+PARAMETER (RELAXV=0.5D+00)   !
+
+PARAMETER (NPASP=10)         ! No. de pasadas en solver P 
+PARAMETER (NSOLVERP=1)		 !
+PARAMETER (RELAXP=0.3D+00)   !  "1=LGS-ADI"  generalizado 
+
+
+!*************************************************************
+!***	ASIGNACION DE LA MEMORIA 	
+!*************************************************************
+DIMENSION X(NX),Y(NY)
+DIMENSION DXP(NX),DXU(NX)
+DIMENSION DYP(NX),DYV(NY)
+
+DIMENSION AE(NX,NY),AW(NX,NY)
+DIMENSION AN(NX,NY),AS(NX,NY)
+DIMENSION AP(NX,NY),BB(NX,NY)
+
+DIMENSION PA(NX,NY),PP(NX,NY)
+
+DIMENSION U (NX,NY),V (NX,NY),P (NX,NY)
+DIMENSION UI(NX,NY),VI(NX,NY)!,PI(NX,NY)
+DIMENSION UX(NX,NY),VX(NX,NY),PX(NX,NY)
+
+DIMENSION DEU(NX,NY),DNV(NX,NY)
+
+DIMENSION FIELD(NX,NY),ANGULO(NX,NY)
+DIMENSION PSI(NX,NY),PSIP(NX,NY)
+
+DIMENSION Uadi(NX),Yadi(NY)
+DIMENSION Vadi(NY),Xadi(NX)
+
+!*************************************************************
+!***	APERTURA DE ARCHIVOS	NO USAR 6 Y 8
+!*************************************************************
+OPEN (1,FILE='Malla_2D.DAT',STATUS='UNKNOWN',ACCESS='SEQUENTIAL')
+OPEN (2,FILE='Coeficientes_2D.DAT',STATUS='UNKNOWN',ACCESS='SEQUENTIAL')
+OPEN (3,FILE='Campo_2D.DAT',STATUS='UNKNOWN',ACCESS='SEQUENTIAL')
+OPEN (4,FILE='Uadi.DAT',STATUS='UNKNOWN',ACCESS='SEQUENTIAL')
+OPEN (5,FILE='Vadi.DAT',STATUS='UNKNOWN',ACCESS='SEQUENTIAL')
+
+!*************************************************************
+!***	LINEAS DE CALCULO MATEMÁTICO
+!*************************************************************
+!Iniciar el contador de tiempo
+CALL CPU_TIME(inicio)
+
+! LIMPIANDO VARIABLES
+DO I=1,NX
+DO J=1,NY
+AE(I,J)=0.0D+00
+AW(I,J)=0.0D+00
+AN(I,J)=0.0D+00
+AS(I,J)=0.0D+00
+AP(I,J)=0.0D+00
+BB(I,J)=0.0D+00
+END DO
+END DO 
+
+!*-*-*-*-*-*-*-*
+!PASO 1: INICIO
+!*-*-*-*-*-*-*-*
+CALL MALLA (NX,HX,X,DXP,DXU,NY,HY,Y,DYP,DYV)
+					
+!WRITE(2,*) "PARAMETER= GEOMETRIA"
+!WRITE(2,*) "I=NX J=NY"
+!WRITE(2,*) "X Y DXP DYP DXU DYV"  
+!WRITE(2,501) X(1),Y(1),DXP(1),DYP(1),DXU(1),DYV(1)
+!WRITE(2,501) X(2),Y(2),DXP(2),DYP(2),DXU(2),DYV(2)
+!WRITE(2,501) X(3),Y(3),DXP(3),DYP(3),DXU(3),DYV(3)
+!WRITE(2,501) X(4),Y(4),DXP(4),DYP(4),DXU(4),DYV(4)
+!WRITE(2,501) X(5),Y(5),DXP(5),DYP(5),DXU(5),DYV(5)
+
+!c
+!cc !A) Arranque de variables 
+!c
+U0=(visc/(Rho*HX))*Re
+
+DO 03 I=2,NX-2												
+DO 03 J=2,NY-1
+U(I,J)=U0
+03 CONTINUE 
+
+DO 04 I=2,NX-1
+DO 04 J=2,NY-2
+V(I,J)=Vinicial
+04 CONTINUE 
+
+DO 05 I=2,NX-1
+DO 05 J=2,NY-1
+P(I,J)=Pinicial
+05 CONTINUE
+ 
+!XXX
+	!XXX-------
+errorU=1.0D+02; errorV=1.0D+02; errorP=1.0D+02
+ITER=0		   
+!CICLO PARA EL EDO. PERMANENTE
+DO 100 WHILE ((errorU.GT.EPS_U).OR.(errorV.GT.EPS_V).OR.(errorP.GT.EPS_P))
+ITER=ITER+1
+	!XXX-------
+!XXX-------
+				
+!Cc
+!Ccc !B) Asignacion de la U',V' y P'  
+!Cc
+DO 06 I=1,NX-1
+DO 06 J=1,NY
+UI(I,J)=U(I,J)
+06 CONTINUE 
+
+DO 07 I=1,NX
+DO 07 J=1,NY-1
+VI(I,J)=V(I,J)
+07 CONTINUE 
+
+!Cc
+!Ccc !C) Asignacion de la U,V y P de trabajo [Ux,Vx,Px]   
+!Cc
+
+DO 21 I=1,NX-1
+DO 21 J=1,NY
+Ux(I,J)=U(I,J)
+21 CONTINUE 
+
+DO 33 I=1,NX
+DO 33 J=1,NY-1
+Vx(I,J)=V(I,J)
+33 CONTINUE 
+
+DO 61 I=1,NX
+DO 61 J=1,NY
+Px(I,J)=P(I,J)
+PA(I,J)=P(I,J)
+61 CONTINUE
+
+DO I=1,NX-1
+DO J=1,NY
+UI(I,J)=U(I,J)
+END DO
+END DO
+!XXX-------				!D) TERMINO FUENTE BB PARA U
+	!XXX-------
+DO 16 I=2,NX-2
+DO 16 J=2,NY-1
+AP0=((Rho*DXU(I)*DYP(J))/Dt)
+BB(I,J)=AP0*UI(I,J)-(P(I+1,J)-P(I,J))*DYP(J)  !DEFINIR AP0 PARA ENTRAR A COEFS.PARA AP
+16 CONTINUE
+	!XXX-------
+!XXX-------
+
+!*-*-*-*-*-*-*-*
+!PASO 2: CALCULAR COEFICIENTES U
+!*-*-*-*-*-*-*-*
+
+CALL COEFU(NX,NY,DXP,DYP,DXU,DYV,IALGORITMO,NSCHEME,AP0,UX,VX,Rho,Visc,U0,Deu,AE,AW,AN,AS,AP,BB)
+
+!WRITE(2,*) "___"
+!DO J=2,NY-1
+!WRITE(2,*) "VELOCITY = U"
+!WRITE(2,*) "LINE J=",(J)
+!WRITE(2,*) "___"
+
+!DO I=2,NX-2
+!WRITE(2,*) "___"
+!WRITE(2,501) DFLOAT(I),DFLOAT(J),AE(I,J)
+!WRITE(2,501) DFLOAT(I),DFLOAT(J),AW(I,J)
+!WRITE(2,501) DFLOAT(I),DFLOAT(J),AN(I,J)
+!WRITE(2,501) DFLOAT(I),DFLOAT(J),AS(I,J)
+!WRITE(2,501) DFLOAT(I),DFLOAT(J),AP(I,J)
+!WRITE(2,501) DFLOAT(I),DFLOAT(J),BB(I,J)
+!END DO
+!END DO 
+
+!*-*-*-*-*-*-*-*
+!PASO 3: CALCULAR U*
+!*-*-*-*-*-*-*-*
+!SELECT CASE (NSOLVERU)
+!CASE (1)
+!CALL LGSADI(1,1,NX-1,NY,AE,AW,AN,AS,AP,BB,UX,NPASU,RELAXU)  
+CALL  LGSADI (NX,NY,1,1,NX-1,NY,AP,AE,AW,AN,AS,BB,UX,NPASU,RELAXU) !DOC IRVING
+!END SELECT
+
+!WRITE(2,*) "FHI UX ",ITER 
+!DO J=1,NY
+!DO I=1,NX-1
+!WRITE(2,501) DFLOAT(I),DFLOAT(J),UX(I,J)
+!END DO 
+!END DO
+
+CALL RESIDUOFHI(NX,NY,1,1,NX-1,NY,AE,AW,AN,AS,AP,BB,UX,errorU)
+  
+DO I=2,NX-1
+DO J=2,NY-2
+VI(I,J)=V(I,J)
+END DO
+
+END DO
+				
+!XXX-------				!E) TERMINO FUENTE BBV
+	!XXX-------
+DO 18 I=2,NX-1
+DO 18 J=2,NY-2
+AP0=((Rho*DYV(J)*DXP(I))/Dt)
+BB(I,J)=AP0*VI(I,J)-(P(I,J+1)-P(I,J))*DXP(I)
+18 CONTINUE
+	!XXX-------
+!XXX-------
+
+!*-*-*-*-*-*-*-*
+!PASO 4: CALCULAR COEFICIENTES V*
+!*-*-*-*-*-*-*-*
+CALL COEFV(NX,NY,DXP,DYP,DXU,DYV,IALGORITMO,NSCHEME,AP0,UX,VX,Rho,Visc,DNV,AE,AW,AN,AS,AP,BB)
+
+!WRITE(2,*) "___"
+!DO J=2,NY-2
+!WRITE(2,*) "VELOCITY = V"
+!WRITE(2,*) "LINE J=",(J)
+!WRITE(2,*) "___"
+
+!DO I=2,NX-1
+!WRITE(2,*) "___"
+!WRITE(2,501) DFLOAT(I),DFLOAT(J),AE(I,J)
+!WRITE(2,501) DFLOAT(I),DFLOAT(J),AW(I,J)
+!WRITE(2,501) DFLOAT(I),DFLOAT(J),AN(I,J)
+!WRITE(2,501) DFLOAT(I),DFLOAT(J),AS(I,J)
+!WRITE(2,501) DFLOAT(I),DFLOAT(J),AP(I,J)
+!WRITE(2,501) DFLOAT(I),DFLOAT(J),BB(I,J)
+!END DO
+!END DO
+
+!*-*-*-*-*-*-*-*
+!PASO 5: RESUELVE V*
+!*-*-*-*-*-*-*-*
+!SELECT CASE (NSOLVERV)
+!CASE (1)
+CALL LGSADI (NX,NY,1,1,NX,NY-1,AP,AE,AW,AN,AS,BB,VX,NPASV,RELAXV) !DOC IRVING
+!END SELECT
+
+!WRITE(2,*) "FHI VX ",ITER
+!DO J=1,NY-1
+!DO I=1,NX
+!WRITE(2,501) DFLOAT(I),DFLOAT(J),VX(I,J)
+!END DO 
+!END DO
+
+CALL RESIDUOFHI(NX,NY,1,1,NX,NY-1,AE,AW,AN,AS,AP,BB,VX,errorV)
+
+!XXX-------				!F) TERMINO DE PRESIÓN 
+	!XXX-------
+DO 09 I=2,NX-1
+DO 09 J=2,NY-1
+Px(I,J)=0.0D+00	 ! TRUCO NUMÉRICO 
+09 CONTINUE 
+	!XXX-------
+!XXX-------
+
+!*-*-*-*-*-*-*-*
+!PASO 6: CALCULAR COEFICIENTES P*
+!*-*-*-*-*-*-*-*
+CALL COEFP(NX,NY,DXP,DYP,Dt,UX,VX,Rho,DEU,DNV,errorP,AE,AW,AN,AS,AP,BB)
+
+!WRITE(2,*) "___"
+!DO J=2,NY-1
+!WRITE(2,*) "PRESIÓN = P"
+!WRITE(2,*) "LINE J=",(J)
+!WRITE(2,*) "___"
+
+!DO I=2,NX-1
+!WRITE(2,*) "___"
+
+!WRITE(2,501) DFLOAT(I),DFLOAT(J),AE(I,J)
+!WRITE(2,501) DFLOAT(I),DFLOAT(J),AW(I,J)
+!WRITE(2,501) DFLOAT(I),DFLOAT(J),AN(I,J)
+!WRITE(2,501) DFLOAT(I),DFLOAT(J),AS(I,J)
+!WRITE(2,501) DFLOAT(I),DFLOAT(J),AP(I,J)
+!WRITE(2,501) DFLOAT(I),DFLOAT(J),BB(I,J)
+!END DO
+!END DO
+
+!*-*-*-*-*-*-*-*
+!PASO 7: CALCULAR P*
+!*-*-*-*-*-*-*-*
+!SELECT CASE (NSOLVERP)
+!CASE (1)
+
+!CALL LGSADI(1,1,NX,NY,AE,AW,AN,AS,AP,BB,PX,NPASP,RELAXP)
+CALL LGSADI(NX,NY,1,1,NX,NY,AP,AE,AW,AN,AS,BB,PX,NPASP,RELAXP)
+
+!WRITE(2,*) "FHI PX ",ITER
+!DO I=1,NX
+!DO J=1,NY
+!WRITE(2,501) DFLOAT(I),DFLOAT(J),PX(I,J)
+!END DO 
+!END DO
+!END SELECT
+!CALL RESIDUOFHI(NX,NY,1,1,NX,NY,AE,AW,AN,AS,AP,BB,PX,errorP)
+
+!XXX-------				!G) TERMINO DE PRESION  
+	!XXX-------
+DO  I=1,NX
+DO  J=1,NY
+PP(I,J)=Px(I,J)
+END DO
+END DO
+	!XXX-------
+!XXX-------
+
+!XXX-------				!H) Correccion de velocidadeS (TODO EL CAMPO PARA U Y V RESPECTIVAMENTE)
+	!XXX------- 					
+DO 12 I=1,NX-1
+DO 12 J=1,NY
+
+IF (J.EQ.NY) THEN 
+	U(I,J)=UX(I,J)
+		ELSE
+			U(I,J)=UX(I,J)+DEU(I,J)*(PP(I,J)-PP(I+1,J))
+END IF
+IF (J.EQ.1) THEN 
+	U(I,J)=UX(I,J)
+		ELSE 
+			U(I,J)=UX(I,J)+DEU(I,J)*(PP(I,J)-PP(I+1,J))
+END IF 
+12 CONTINUE 
+
+DO 14 I=1,NX
+	DO 14 J=1,NY-1
+		IF (I.EQ.1) THEN
+			V(I,J)=VX(I,J)
+			ELSE 
+				V(I,J)=VX(I,J)+DNV(I,J)*(PP(I,J)-PP(I,J+1))
+		END IF 
+		IF (I.EQ.NX) THEN
+			V(I,J)=VX(I,J)
+			ELSE 
+			V(I,J)=VX(I,J)+DNV(I,J)*(PP(I,J)-PP(I,J+1))
+		END IF
+14 CONTINUE 
+	!XXX-------
+!XXX-------
+
+
+!XXX-------				!I) Correccion de Presión (INTERNOS)
+	!XXX-------
+DO 10 I=2,NX-1
+DO 10 J=2,NY-1 	 	
+P(I,J)=PA(I,J)+RELAXP*PP(I,J)
+10 CONTINUE 
+
+!FRONTERA NORTE 
+DO I=1,NX
+P(I,NY)=P(I,NY-1)
+!FRONTERA SUR 
+P(I,1)=P(I,2)
+END DO
+
+!FRONTERA OESTE W 
+DO J=2,NY-1
+P(1,J)=P(2,J)
+!FRONTA ESTE E 
+P(NX,J)=P(NX-1,J)
+END DO 
+
+!***************************************
+!	IMPRESIÓN EN PANTALLA MIENTRAS ITERA
+!***************************************
+WRITE(*,*) 
+WRITE(*,*)"ITER=",ITER
+WRITE(*,*)"ERRORU=",errorU
+WRITE(*,*)"ERRORV=",errorV
+WRITE(*,*)"ERRORP=",errorP  
+
+DO WHILE (ITER.EQ.ITERMAX)
+WRITE (*,*) ">> PARE POR ITER MAX <<"
+GOTO 45
+END DO
+
+100 CONTINUE ! ETIQUETA DE DO WHILE PERMANENTE
+!*************************************************************
+!***	IMPRESIÓN DE ARCHIVOS															  
+!*************************************************************
+CALL CAMPO(NX,NY,NX,NY,PI,U,V,FIELD,ANGULO)                               
+CALL STREAMLINES(NX,NY,NX,NY,U,PSI,PSIP)
+
+! ADIMENSIONALIZANDO VARIABLES (U,V,X,Y)  +++P QUEDA PENDIENTE+++
+
+!PARA U*
+WRITE(4,*) "Y* U*"
+WRITE(4,*)" -  "
+N=(NX+1)/2 ! Linea por el centro de U* para todo J
+DO J=1,NY
+Yadi(J)=Y(J)/HY
+Uadi(J)=U(n,J)/U0
+WRITE(4,501)Yadi(J),Uadi(J)
+END DO 
+
+!PARA V*
+WRITE(5,*) "X* V*"
+WRITE(5,*)" -  "
+
+DO I=1,NX
+N=(NY+1)/2 ! Linea por el centro de V* para todo I
+Xadi(I)=X(I)/HX
+Vadi(I)=V(I,N)/U0
+WRITE(5,501)Xadi(I),Vadi(I) 
+END DO
+
+WRITE(3,*)"TITLE = PLANE PLATE"
+WRITE(3,*)"VARIABLES = X,Y,U,V,PSI"
+WRITE(3,*)"ZONE I=",NX,"J=",NY,"F=point"
+WRITE(3,*)   
+
+DO 451 J=1,NY
+DO 451 I=1,NX
+	WRITE(3,501) X(I),Y(J),U(I,J),V(I,J),PSIP(I,J)
+451  CONTINUE
+
+45 CONTINUE ! ITERMAX
+!**** IMPRESIÓN EN PANTALLA ****!
+WRITE(*,*)
+WRITE(*,*) ":)"
+WRITE(*,*)
+
+!*************************************************************
+!***	CIERRE DE APERTURA DE ARCHIVO															  
+!*************************************************************
+501 FORMAT (200 F25.15,1A50) 
+CLOSE(1)
+CLOSE(2)
+CLOSE(3)
+CLOSE(4)
+CLOSE(5)
+!*************************************************************
+!***	CIERRE DEL PROGRAMA
+!*************************************************************
+!Detener el contador de tiempo
+CAll CPU_TIME(fin)
+tiempo=fin-inicio
+
+WRITE(*,*)'tiempo de computo=',tiempo,'s'
+Pause
+END PROGRAM Difusion2D_V1
+!*************************************************************
+!						ÁREA DE SUBRUTINAS					 
+!					 -*-*-*-*-*-*-*-*-*-*-*-				
+!*************************************************************
+
+!*************************************************************
+!***	SUBRUTINA MALLA															  
+!*************************************************************
+SUBROUTINE MALLA (NX,HX,X,DXP,DXU,NY,HY,Y,DYP,DYV)
+IMPLICIT DOUBLE PRECISION (A-H,O-Z)
+
+DIMENSION X(NX),Y(NY)
+DIMENSION DXP(NX),DXU(NX)
+DIMENSION DYP(NY),DYV(NY)
+
+!---GENERACIÓN DE LOS VOLUMENES DE CONTROL DXP(I)
+D=HX/DFLOAT(NX-2)
+DO I=1,NX
+	IF (I.EQ.1) THEN
+		DXP(I)=0.0D+00
+		ELSE IF(I.EQ.NX) THEN
+			DXP(I)=0.0D+00
+			ELSE
+				DXP(I)=D
+	END IF
+END DO
+!---GENERACIÓN DE LAS COORDENADAS X(I)
+DO I=1,NX
+	IF (I.EQ.1) THEN
+		X(I)=0.0D+00
+		ELSE IF(I.EQ.NX) THEN
+			X(I)=HX
+			ELSE
+				X(I)=X(I-1)+((DXP(I-1)+DXP(I))/2.0D+00)
+	END IF
+END DO
+!---GENERACIÓN DE LAS DISTANCIAS DXU(I)
+DO I=1,NX-1
+	DXU(I)=X(I+1)-X(I)
+END DO
+!XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+!---GENERACIÓN DE LOS VOLUMENES DE CONTROL DYP(J)
+A=HY/DFLOAT(NY-2)
+DO J=1,NY
+	IF (J.EQ.1) THEN
+		DYP(J)=0.0D+00
+		ELSE IF(J.EQ.NY) THEN
+			DYP(J)=0.0D+00
+			ELSE
+				DYP(J)=A
+	END IF
+END DO
+
+!---GENERACIÓN DE LAS COORDENADAS Y(J)
+DO J=1,NY
+	IF (J.EQ.1) THEN
+		Y(J)=0.0D+00
+		ELSE IF(J.EQ.NY) THEN
+			Y(J)=HY
+			ELSE
+				Y(J)=Y(J-1)+((DYP(J-1)+DYP(J))/2.0D+00)
+	END IF
+END DO
+!---GENERACIÓN DE LAS DISTANCIAS DYV(J)
+DO J=1,NY-1
+	DYV(J)=Y(J+1)-Y(J)
+END DO
+
+RETURN
+END SUBROUTINE MALLA
+
+!*************************************************************
+!***	SUBRUTINA COEFICIENTES "U"															  
+!*************************************************************
+SUBROUTINE COEFU(NX,NY,DXP,DYP,DXU,DYV,IALGORITMO,NSCHEME,AP0,U,V,Rho,Visc,U0,DEU,AE,AW,AN,AS,AP,BB)
+IMPLICIT DOUBLE PRECISION (A-H,O-Z) ! I,J,K,L,M,N PRESICION SIMPLE
+
+DIMENSION AE(NX,NY),AN(NX,NY)
+DIMENSION AW(NX,NY),AS(NX,NY)
+DIMENSION AP(NX,NY),BB(NX,NY)
+
+DIMENSION DXP(NX),DYP(NX),DEU(NX,NY)
+DIMENSION DXU(NX),DYV(NY)
+
+DIMENSION U(NX,NY),V(NX,NY)
+!NODO INTERNOS
+DO J=2,NY-1
+	DO I=2,NX-2
+	!PARA INTERFAZ e
+	Vise=Visc
+	!PARA INTERFAZ w
+	Visw=Visc
+    !PARA INTERFAZ n
+	Visn=Visc
+	!PARA INTERFAZ s
+	Viss=Visc
+
+	! CALCULO DE FLUJOS	! PENDIENTE REVISAR NOTAS ++++++
+	Fe=0.5D+00*Rho*(U(I,J)+U(I+1,J))*DYP(J)
+	Fw=0.5D+00*Rho*(U(I-1,J)+U(I,J))*DYP(J)
+	Fn=0.5D+00*Rho*(V(I,J)+V(I+1,J))*DXU(I)
+	Fs=0.5D+00*Rho*(V(I,J-1)+V(I+1,J-1))*DXU(I)	 !ERROR
+
+	!Fs=0.5D+00*Rho*(V(I,J-1)+V(I,J))*DXU(I)	 !ERROR
+
+	! CALCULO DE CONDUCTANCIAS
+	De=(Vise/DXP(I+1))*DYP(J)
+	DW=(Visw/DXP(I)  )*DYP(J)
+	Dn=(Visn/DYV(J))  *DXU(I)
+	Ds=(Viss/DYV(J-1))*DXU(I)
+
+	! CALCULO DE PECLET 		
+	PEe=DABS(Fe/De)
+	PEw=DABS(Fw/Dw)
+	PEn=DABS(Fn/Dn)
+	PEs=DABS(Fs/Ds)
+
+	! CALCULO DE COEFICIENTES 	
+	AE(I,J)=De*APECLET(PEe,NSCHEME)+DMAX1(-Fe,0.0D+00)
+	AW(I,J)=Dw*APECLET(PEw,NSCHEME)+DMAX1( Fw,0.0D+00)
+	AN(I,J)=Dn*APECLET(PEn,NSCHEME)+DMAX1(-Fn,0.0D+00)
+	AS(I,J)=Ds*APECLET(PEs,NSCHEME)+DMAX1( Fs,0.0D+00)
+
+	AP(I,J)=AE(I,J)+AW(I,J)+AN(I,J)+AS(I,J)+AP0 !+(Fe-Fw)+(Fn-Fs)
+	
+	END DO
+END DO	
+
+DO I=1,NX-1
+DO J=1,NY
+   SELECT CASE (IAlgoritmo) 
+    CASE (1) 
+	SIMPLE=0.00D+00
+	CASE (2)
+	SIMPLE=AE(I,J)+AW(I,J)+AN(I,J)+AS(I,J)
+END SELECT
+END DO
+END DO
+
+DO I=2,NX-2
+DO J=2,NY-1
+DEU(I,J)=DYP(J)/(AP(I,J)-SIMPLE)
+END DO 
+END DO
+
+DO J=2,NY-1
+!NODO FRONTERA "W"
+AE(1,J)=0.0D+00
+AW(1,J)=0.0D+00
+AN(1,J)=0.0D+00
+AS(1,J)=0.0D+00
+AP(1,J)=1.0D+00
+BB(1,J)=0.0D+00
+!NODO FRONTERA "E"
+AE(NX-1,J)=0.0D+00
+AW(NX-1,J)=0.0D+00
+AN(NX-1,J)=0.0D+00
+AS(NX-1,J)=0.0D+00
+AP(NX-1,J)=1.0D+00
+BB(NX-1,J)=0.0D+00
+END DO
+!NODO FRONTERA "N"
+DO I=1,NX-1
+AE(I,NY)=0.0D+00
+AW(I,NY)=0.0D+00
+AN(I,NY)=0.0D+00
+AS(I,NY)=0.0D+00
+AP(I,NY)=1.0D+00
+BB(I,NY)=U0
+!NODO FRONTERA "S"
+AE(I,1)=0.0D+00
+AW(I,1)=0.0D+00
+AN(I,1)=0.0D+00
+AS(I,1)=0.0D+00
+AP(I,1)=1.0D+00
+BB(I,1)=0.0D+00
+END DO
+
+!WRITE(*,*) "BB", BB(3,NY)
+
+
+RETURN
+END SUBROUTINE COEFU
+!*************************************************************
+!***	SUBRUTINA COEFICIENTES "V"															  
+!*************************************************************
+SUBROUTINE COEFV(NX,NY,DXP,DYP,DXU,DYV,IALGORITMO,NSCHEME,AP0,U,V,Rho,Visc,DNV,AE,AW,AN,AS,AP,BB)
+IMPLICIT DOUBLE PRECISION (A-H,O-Z) ! I,J,K,L,M,N PRESICION SIMPLE
+
+DIMENSION AE(NX,NY),AN(NX,NY)
+DIMENSION AW(NX,NY),AS(NX,NY)
+DIMENSION BB(NX,NY),AP(NX,NY)
+
+DIMENSION DXP(NX),DYP(NX),DNV(NX,NY)
+DIMENSION DXU(NX),DYV(NY)
+
+DIMENSION U(NX,NY),V(NX,NY)
+
+!NODO INTERNOS
+DO J=2,NY-2
+	DO I=2,NX-1
+
+	!PARA INTERFAZ e
+	Vise=Visc
+	!PARA INTERFAZ w
+	Visw=Visc
+    !PARA INTERFAZ n
+	Visn=Visc
+	!PARA INTERFAZ s
+	Viss=Visc
+
+	! CALCULO DE FLUJOS
+	Fe=0.5D+00*Rho*(U(I,J)+U(I,J+1))*DYV(J)		
+	Fw=0.5D+00*Rho*(U(I-1,J)+U(I-1,J+1))*DYV(J)								
+	Fn=0.5D+00*Rho*(V(I,J)+V(I,J+1))*DXP(I)
+	Fs=0.5D+00*Rho*(V(I,J-1)+V(I,J))*DXP(I)
+
+	! CALCULO DE CONDUCTANCIAS ! REVISAR NOTAS
+	De=(Vise/DXU(I))*DYV(J)
+	DW=(Visw/DXU(I-1))*DYV(J)
+	Dn=(Visn/DYP(J+1))*DXP(I)
+	Ds=(Viss/DYP(J))*DXP(I)
+
+	! CALCULO DE PECLET 		
+	PEe=DABS(Fe/De)
+	PEw=DABS(Fw/Dw)
+	PEn=DABS(Fn/Dn)
+	PEs=DABS(Fs/Ds)
+
+	! CALCULO DE COEFICIENTES 	
+	AE(I,J)=De*APECLET(PEe,NSCHEME)+DMAX1(-Fe,0.0D+00)
+	AW(I,J)=Dw*APECLET(PEw,NSCHEME)+DMAX1( Fw,0.0D+00)
+	AN(I,J)=Dn*APECLET(PEn,NSCHEME)+DMAX1(-Fn,0.0D+00)
+	AS(I,J)=Ds*APECLET(PEs,NSCHEME)+DMAX1( Fs,0.0D+00)	
+	AP(I,J)=AE(I,J)+AW(I,J)+AN(I,J)+AS(I,J)+AP0 !+(Fe-Fw)+(Fn-Fs)	
+	END DO
+END DO
+
+DO I=1,NX
+DO J=1,NY-1
+   SELECT CASE (IAlgoritmo) 
+    CASE (1) 
+	SIMPLE=0.00D+00
+	CASE (2)
+	SIMPLE=AE(I,J)+AW(I,J)+AN(I,J)+AS(I,J)
+END SELECT
+END DO
+END DO
+
+DO I=2,NX-1
+DO J=2,NY-2
+DNV(I,J)=DXP(I)/(AP(I,J)-SIMPLE)
+END DO 
+END DO
+			 
+DO J=2,NY-2
+!NODO FRONTERA "W"
+AE(1,J)=0.0D+00
+AW(1,J)=0.0D+00
+AN(1,J)=0.0D+00
+AS(1,J)=0.0D+00
+AP(1,J)=1.0D+00
+BB(1,J)=0.0D+00
+!NODO FRONTERA "E"
+AE(NX,J)=0.0D+00
+AW(NX,J)=0.0D+00
+AN(NX,J)=0.0D+00
+AS(NX,J)=0.0D+00
+AP(NX,J)=1.0D+00
+BB(NX,J)=0.0D+00
+END DO
+!NODO FRONTERA "N"
+DO I=1,NX
+AE(I,NY-1)=0.0D+00
+AW(I,NY-1)=0.0D+00
+AN(I,NY-1)=0.0D+00
+AS(I,NY-1)=0.0D+00
+AP(I,NY-1)=1.0D+00
+BB(I,NY-1)=0.0D+00
+!NODO FRONTERA "S"
+AE(I,1)=0.0D+00
+AW(I,1)=0.0D+00
+AN(I,1)=0.0D+00
+AS(I,1)=0.0D+00
+AP(I,1)=1.0D+00
+BB(I,1)=0.0D+00
+END DO
+
+RETURN
+END SUBROUTINE COEFV
+
+!*************************************************************
+!***	SUBRUTINA COEFICIENTES "P"															  
+!*************************************************************
+SUBROUTINE COEFP(NX,NY,DXP,DYP,Dt,U,V,Rho,DEU,DNV,ERRORP,AE,AW,AN,AS,AP,BB)
+IMPLICIT DOUBLE PRECISION (A-H,O-Z) ! I,J,K,L,M,N PRESICION SIMPLE
+
+DIMENSION AE(NX,NY),AW(NX,NY)
+DIMENSION AN(NX,NY),AS(NX,NY)
+DIMENSION BB(NX,NY),AP(NX,NY)
+DIMENSION DXP(NX)
+DIMENSION DYP(NY)
+DIMENSION U(NX,NY),V(NX,NY) 
+
+DIMENSION DEU(NX,NY)
+DIMENSION DNV(NX,NY)
+
+!NODO INTERNOS
+DO J=2,NY-1
+	DO I=2,NX-1
+
+	! CALCULO DE FLUJOS
+	Fe=Rho*U(I,J)*DYP(J)
+	Fw=Rho*U(I-1,J)*DYP(J)
+	Fn=Rho*V(I,J)*DXP(I)
+	Fs=Rho*V(I,J-1)*DXP(I)
+
+	! CALCULO DE COEFICIENTES 	
+	AE(I,J)=Rho*DEU(I,J)*DYP(J)
+	IF (I.EQ.NX-1) AE(I,J)=0.0D+00
+
+	AW(I,J)=Rho*DEU(I-1,J)*DYP(J)
+	IF (I.EQ.2) AW(I,J)=0.0D+00	
+	
+	AN(I,J)=Rho*DNV(I,J)*DXP(I)
+	IF (J.EQ.NY-1) AN(I,J)=0.0D+00
+	
+	AS(I,J)=Rho*DNV(I,J-1)*DXP(I)
+	IF (J.EQ.2) AS(I,J)=0.0D+00
+
+	BB(I,J)=-((Fe-Fw)+(Fn-Fs)) 
+
+	AP(I,J)=AE(I,J)+AW(I,J)+AN(I,J)+AS(I,J) 
+
+	END DO
+END DO
+
+AE(NX-1,NY-1)=0.0D+00
+AW(NX-1,NY-1)=0.0D+00
+AN(NX-1,NY-1)=0.0D+00
+AS(NX-1,NY-1)=0.0D+00
+AP(NX-1,NY-1)=1.0D+00
+BB(NX-1,NY-1)=0.0D+00
+
+DO J=2,NY-1
+!NODO FRONTERA "W"
+AE(1,J)=0.0D+00
+AW(1,J)=0.0D+00
+AN(1,J)=0.0D+00
+AS(1,J)=0.0D+00
+AP(1,J)=1.0D+00
+BB(1,J)=0.0D+00
+!NODO FRONTERA "E"
+AE(NX,J)=0.0D+00
+AW(NX,J)=0.0D+00
+AN(NX,J)=0.0D+00
+AS(NX,J)=0.0D+00
+AP(NX,J)=1.0D+00
+BB(NX,J)=0.0D+00
+END DO
+!NODO FRONTERA "N"
+DO I=1,NX
+AE(I,NY)=0.0D+00
+AW(I,NY)=0.0D+00
+AN(I,NY)=0.0D+00
+AS(I,NY)=0.0D+00
+AP(I,NY)=1.0D+00
+BB(I,NY)=0.0D+00
+!NODO FRONTERA "S"
+AE(I,1)=0.0D+00
+AW(I,1)=0.0D+00
+AN(I,1)=0.0D+00
+AS(I,1)=0.0D+00
+AP(I,1)=1.0D+00
+BB(I,1)=0.0D+00
+END DO
+
+SUMAVOL=0.0D+00
+ERRORP=0.0D+00
+DO 2330 I=2,NX-1
+	DO 2330 J=2,NY-1
+          SVOL=RHO*DXP(I)*DYP(J)/DT
+          SUMAVOL=SUMAVOL+SVOL 
+          ERRORP=DMAX1(ERRORP,BB(I,J))
+2330   CONTINUE
+ERRORP=ERRORP/SUMAVOL
+RETURN
+END SUBROUTINE COEFP
+
+!C ******************************************************************************    
+!C ***************************  MÉTODO ADI-LGS  ********************************* 
+!C ******************************************************************************              
+     SUBROUTINE LGSADI (NIMAX,NJMAX,I0,J0,I1,J1,AP,AE,AW,AN,AS,B,FHI,NPAS,RELAX)
+	 IMPLICIT DOUBLE PRECISION(A-H,O-Z)
+
+	 !PARAMETER (NIMAX=251,NJMAX=251)
+
+!C  **********************************************
+!C  ****** VARIABLES DE FLUJO 
+!C  **********************************************
+
+	 DIMENSION FHI(NIMAX,NJMAX),FHIOLD(NIMAX,NJMAX)
+       DIMENSION FHIOLDX(NIMAX,NJMAX)
+
+!C  **********************************************
+!C  ****** COEFICIENTES DE LAS EDP´S DISCRETIZADAS 
+!C  **********************************************
+
+	 DIMENSION AP(NIMAX,NJMAX),AE(NIMAX,NJMAX),AW(NIMAX,NJMAX)
+	 DIMENSION AN(NIMAX,NJMAX),AS(NIMAX,NJMAX)
+
+!C  **********************************************
+!C  ****** TÉRMINO FUENTE 
+!C  **********************************************
+       
+	 DIMENSION B(NIMAX,NJMAX) 
+
+!C  **********************************************
+!C  ****** ARREGLO RESERVADO PARA LA MATRIZ TRIDAG 
+!C  **********************************************
+ 
+	  DIMENSION PT(NJMAX),QT(NJMAX)
+
+      I2=I1-1
+      J2=J1-1
+
+      ICUENTA=0
+
+ 3240 CONTINUE
+
+!**************************************************************************
+!**************     RENOMBRAMIENTO DE LA VARIABLE FHI      ****************
+!**************************************************************************
+!C
+       DO I=I0,I1              
+       DO J=J0,J1 
+                      FHIOLD(I,J)=FHI(I,J)
+       END DO
+	 END DO
+
+!**************************************************************************
+!************   BARRIDO DE PUNTOS NODALES EN DIRECCIÓN "X"   **************
+!**************************************************************************
+!C
+      DO J=J0,J1             
+!C      
+!CC    ****  1er.Punto en "X"  ****
+!C
+                    BETA=B(I0,J)+AS(I0,J)*FHI(I0,J-1)+ &
+                                AN(I0,J)*FHI(I0,J+1)
+
+      IF(J.EQ.J0)   BETA=B(I0,J)+AN(I0,J)*FHI(I0,J+1)   
+      IF(J.EQ.J1)   BETA=B(I0,J)+AS(I0,J)*FHI(I0,J-1) 
+      
+      DENOM=AP(I0,J)
+      PT(I0)=AE(I0,J)/DENOM
+      QT(I0)=BETA/DENOM
+!C      
+!CC    ****  Puntos Centales en "X"  ****
+!C
+      DO 334 I=I0+1,I2
+                       BETA=B(I,J)+AS(I,J)*FHI(I,J-1)+ &
+                                  AN(I,J)*FHI(I,J+1)
+
+      IF(J.EQ.J0)      BETA=B(I,J)+AN(I,J)*FHI(I,J+1)    
+      IF(J.EQ.J1)      BETA=B(I,J)+AS(I,J)*FHI(I,J-1)   
+
+      DENOM=AP(I,J)-PT(I-1)*AW(I,J)
+      PT(I)=AE(I,J)/DENOM
+      QT(I)=(BETA+QT(I-1)*AW(I,J))/DENOM
+  
+  334 CONTINUE
+!C      
+!CC    ****  Ultimo Punto en "X"  ****
+!C
+                    BETA=B(I1,J)+AS(I1,J)*FHI(I1,J-1)+ &
+                                AN(I1,J)*FHI(I1,J+1)
+
+      IF(J.EQ.J0)   BETA=B(I1,J)+AN(I1,J)*FHI(I1,J+1)   
+      IF(J.EQ.J1)   BETA=B(I1,J)+AS(I1,J)*FHI(I1,J-1)  
+
+      DENOM=AP(I1,J)-PT(I2)*AW(I1,J)
+      QT(I1)=(BETA+QT(I2)*AW(I1,J))/DENOM
+!C
+!CC    Solución de la Variable FHI(i,j)
+
+!PASO 3 * * * * * * * * * * *    
+	   
+	 FHIOLDX(I1,J)= QT(I1)
+
+!PASO 4 * * * * * * * * * * *
+
+	DO I=I2, I0, -1
+
+	  FHIOLDX(I,J)=PT(I)*FHIOLDX(I+1,J)+QT(I)
+
+      END DO
+      END DO
+
+
+
+!C ---------------------------
+
+!**************************************************************************
+!************   BARRIDO DE PUNTOS NODALES EN DIRECCIÓN "Y"   **************
+!**************************************************************************
+!C
+      DO  I=I0,I1             
+!C      
+!CC    ****  1er.Punto en "Y"  ****
+!C
+                    BETA=B(I,J0)+AW(I,J0)*FHI(I-1,J0)+ &
+                                AE(I,J0)*FHI(I+1,J0)
+
+      IF(I.EQ.I0)   BETA=B(I,J0)+AE(I,J0)*FHI(I+1,J0)   
+      IF(I.EQ.I1)   BETA=B(I,J0)+AW(I,J0)*FHI(I-1,J0)  
+      
+      DENOM=AP(I,J0)
+      PT(J0)=AN(I,J0)/DENOM
+      QT(J0)=BETA/DENOM
+!C      
+!CC    ****  Puntos Centales en "Y"  ****
+!C
+      DO 324 J=J0+1,J2
+                       BETA=B(I,J)+AW(I,J)*FHI(I-1,J)+  &
+                                  AE(I,J)*FHI(I+1,J)  
+
+      IF(I.EQ.I0)      BETA=B(I,J)+AE(I,J)*FHI(I+1,J)    
+      IF(I.EQ.I1)      BETA=B(I,J)+AW(I,J)*FHI(I-1,J)   
+
+      DENOM=AP(I,J)-PT(J-1)*AS(I,J)
+      PT(J)=AN(I,J)/DENOM
+      QT(J)=(BETA+QT(J-1)*AS(I,J))/DENOM
+  
+  324 CONTINUE
+!C      
+!CC    ****  Ultimo Punto en "Y"  ****
+!C
+                    BETA=B(I,J1)+AW(I,J1)*FHI(I-1,J1)+	&
+                                AE(I,J1)*FHI(I+1,J1)  
+
+      IF(I.EQ.I0)   BETA=B(I,J1)+AE(I,J1)*FHI(I+1,J1)   
+      IF(I.EQ.I1)   BETA=B(I,J1)+AW(I,J1)*FHI(I-1,J1)    
+
+      DENOM=AP(I,J1)-PT(J2)*AS(I,J1)
+      QT(J1)=(BETA+QT(J2)*AS(I,J1))/DENOM
+!C
+!CC    Solución de la Variable FHI(i,j)
+
+!PASO 3 * * * * * * * * * * *    
+	   
+	FHI(I,J1)= QT(J1)
+
+!PASO 4 * * * * * * * * * * *
+
+	DO J=J2, J0, -1
+	  FHI(I,J)= PT(J)*FHI(I,J+1)+QT(J)
+      END DO
+      END DO
+
+!C    *************************************************
+!C    *** BAJA-RELAJACIÒN DE LA VARIABLE FHI 
+!C    *************************************************
+
+       DO I=I0,I1             
+       DO J=J0,J1 
+          
+		FHI(I,J)=RELAX*FHI(I,J)+(1.0D+00-RELAX)*FHIOLD(I,J)
+
+       END DO
+	 END DO
+
+!**************************************************************************
+!***********     CONTADOR PARA NUMERO DE PASADAS DE FHI      **************
+!**************************************************************************
+!C
+      ICUENTA=ICUENTA+1
+!**  
+      IF (ICUENTA.LT.NPAS) THEN            
+                                  GOTO 3240
+                              ELSE
+      END IF                                            
+!C
+      RETURN  
+      END
+!C
+
+! *****************************************************************************
+! ******          CALCULO DEL RESIDUAL FHI (FHI = U, V, T)            *********        
+! *****************************************************************************        
+  SUBROUTINE RESIDUOFHI(NIMAX,NJMAX,I0,J0,I1,J1,AE,AW,AN,AS,AP,BB,FHI,ERRORFHI)  
+ 
+      IMPLICIT DOUBLE PRECISION (A-H,O-Z)
+!C      PARAMETER (NIMAX=151,NJMAX=151)
+!C
+!C  VARIABLES DE FLUJO.
+      DIMENSION FHI(NIMAX,NJMAX)
+!C
+!C  COEFICIENTES DE LAS PDE'S DISCRETIZADAS.
+      DIMENSION AE(NIMAX,NJMAX),AW(NIMAX,NJMAX),AN(NIMAX,NJMAX)
+      DIMENSION AS(NIMAX,NJMAX),AP(NIMAX,NJMAX)
+!C
+!C  TÉRMINO FUENTE.
+      DIMENSION BB(NIMAX,NJMAX)
+!C
+      DENOMFHI=0.0D+00
+      RESIFHI=0.0D+00
+
+        DO 2406 I=I0, I1
+        DO 2406 J=J0, J1 
+	   
+                       SUMAFHI=AE(I,J)*FHI(I+1,J)+AW(I,J)*FHI(I-1,J)   &
+                              +AN(I,J)*FHI(I,J+1)+AS(I,J)*FHI(I,J-1)   &
+                              +BB(I,J)-AP(I,J)*FHI(I,J)
+                       RESIFHI=RESIFHI+(SUMAFHI*SUMAFHI)
+                      
+                       SUMAAPFHI=AP(I,J)*FHI(I,J)
+                       DENOMFHI=DENOMFHI+(SUMAAPFHI)
+ 2406   CONTINUE
+!***                       ERRORT=DSQRT(RESIFHI)/(DABS(DENOMFHI+1.0D-30))
+                       ERRORFHI=DSQRT(RESIFHI)
+
+      RETURN
+      END
+
+!*************************************************************
+!***	FUNCIÓN APLECT															  
+!*************************************************************
+FUNCTION APECLET (PE,NSCHEME)
+IMPLICIT DOUBLE PRECISION (A-H,O-Z) 
+  		 
+SELECT CASE (NSCHEME)
+
+CASE (1) ! CENTRADO
+	APECLET=1.0D+00-0.50D+00*DABS(PE)
+CASE (2) ! UPWIND
+	APECLET=1.0D+00
+CASE (3) ! Exacto o exponencial
+	APECLET=PE/(EXP(PE)-1.0D+00)
+CASE (4) ! HIBRIDO
+	APLECTE=DMAX1(0.0D+00,(1.0D+00-0.5D+00*PE))
+CASE (5) ! Ley de potencia
+	APECLET=DMAX1(0.0D+00,(1.0D+00-0.1D+00*PE))**5.0D+00
+END SELECT
+
+RETURN
+END 
+
+! *****************************************************************************
+! ********   SUBRUTINA STREAMLINES (PSIP = LINEAS DE CORRIENTE)     ***********        
+! *****************************************************************************
+  SUBROUTINE STREAMLINES(NIMAX,NJMAX,NX,NY,U,PSI,PSIP)
+    
+      IMPLICIT DOUBLE PRECISION (A-H,O-Z)
+!C      PARAMETER (NIMAX=151,NJMAX=151)
+!C  CANTIDADES GEOMETRICAS.
+!C      DIMENSION DYP(NJMAX)
+!C  VARIABLES DE FLUJO.
+      DIMENSION U(NIMAX,NJMAX),PSI(NIMAX,NJMAX),PSIP(NIMAX,NJMAX)
+!C
+!C  NOTA: CALCULO DE PSI SOBRE LA MALLA DE LA VELOCIDAD "V"
+!C
+        DO 260 I=2,NX-1
+        DO 260 J=2,NY-2 
+              PSI(I,J)=(((U(I,J)+U(I-1,J))/2.0D+00))+PSI(I,J-1)
+  260   CONTINUE
+!C
+!C  NOTA: CALCULO DE PSI SOBRE LA MALLA PRINCIPAL (T,P)
+!C
+        DO 265 I=2,NX-1
+        DO 265 J=3,NY-2 
+                  PSIP(I,J)=(PSI(I,J)+PSI(I,J-1))/2.0D+00
+  265   CONTINUE
+!C     LADO SUR
+        DO 267 I=2,NX-1
+               J=2 
+                  PSIP(I,J)=(PSI(I,J)+PSI(I,J-1))/2.0D+00
+  267   CONTINUE
+!C     LADO NORTE
+        DO 269 I=2,NX-1
+               J=NY-1 
+                  PSIP(I,J)=(PSI(I,J)+PSI(I,J-1))/2.0D+00
+  269   CONTINUE
+!C  
+      RETURN            
+      END 
+
+! *****************************************************************************
+! ***  SUBRUTINA CAMPO (FIELD=VECTOR RESULT , ANGULO=INCLINACIÓN DE FIELD) ****
+! *****************************************************************************
+  SUBROUTINE CAMPO(NIMAX,NJMAX,NX,NY,PI,U,V,FIELD,ANGULO)                 
+
+      IMPLICIT DOUBLE PRECISION (A-H,O-Z)
+!C      PARAMETER (NIMAX=151,NJMAX=151)
+
+!C     VARIABLES DE FLUJO.
+
+      DIMENSION U(NIMAX,NJMAX),V(NIMAX,NJMAX)
+      DIMENSION  UP(NIMAX,NJMAX),VP(NIMAX,NJMAX)
+      DIMENSION  FIELD(NIMAX,NJMAX),ANGULO(NIMAX,NJMAX)
+!C  
+!C  NOTA: CALCULO DE LA COMPONENTE DE VEL."U" SOBRE LA MALLA PRINCIPAL (T,P)
+!C
+        DO 280 J=1,NY
+        DO 280 I=2,NX-1 
+                       UP(I,J)=(U(I,J)+U(I-1,J))/2.0D+00
+  280   CONTINUE
+
+        DO 282 J=1,NY
+                       UP(1,J)=U(1,J)                                           !"FRONTERA OESTE"
+                       UP(NX,J)=U(NX-1,J)                                       !"FRONTERA ESTE"
+  282   CONTINUE
+!C
+!CC    ASIGNACIÒN DE LA VELOCIDAD U EN LA MALLA PRINCIPAL
+!C
+        DO 284 J=1,NY
+        DO 284 I=1,NX 
+                     U(I,J)=UP(I,J)                                               
+  284   CONTINUE
+!C
+!C  NOTA: CALCULO DE LA COMPONENTE DE VEL."V" SOBRE LA MALLA PRINCIPAL (T,P)
+!C
+        DO 286 I=1,NX
+        DO 286 J=2,NY-1 
+                       VP(I,J)=(V(I,J)+V(I,J-1))/2.0D+00
+  286   CONTINUE
+!C     
+        DO 288 I=1,NX
+                       VP(I,1)=V(I,1)                                           !"FRONTERA SUR"
+                       VP(I,NY)=V(I,NY-1)                                       !"FRONTERA NORTE"
+  288   CONTINUE
+!C
+!CC    ASIGNACIÒN DE LA VELOCIDAD V EN LA MALLA PRINCIPAL
+!C
+        DO 290 J=1,NY
+        DO 290 I=1,NX 
+                     V(I,J)=VP(I,J)                                               
+  290   CONTINUE
+!C
+!C  NOTA: CALCULO DEL VECTOR RESULTANTE DE VELOCIDAD
+!C
+        DO 292 I=1,NX
+        DO 292 J=1,NY 
+                  FIELD(I,J)=DSQRT((UP(I,J)**2)+(VP(I,J)**2))
+  292   CONTINUE
+!C
+!C  NOTA: CALCULO DEL ANGULO DE INCLINACIÓN DEL VECTOR RESULTANTE DE VELOCIDAD
+!C
+        DO 294 I=2,NX-1
+        DO 294 J=2,NY-1 
+
+        ANGULO(I,J)=(DATAN2(VP(I,J),UP(I,J)))*(360.0D+00/(2.0D+00*PI))
+
+  294   CONTINUE
+
+
+!501   FORMAT(200F25.15)    
+
+
+      RETURN            
+      END 
